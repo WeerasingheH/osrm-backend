@@ -390,6 +390,8 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
 
         weight = scripting_environment.ProcessSegment(
             edge_iterator->source_coordinate, target_coord, distance, weight);
+        duration = scripting_environment.ProcessSegment(
+            edge_iterator->source_coordinate, target_coord, distance, duration);
 
         auto &edge = edge_iterator->result;
         edge.weight = std::max<EdgeWeight>(1, std::round(weight * 10.));
