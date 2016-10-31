@@ -18,7 +18,8 @@ struct out_way
     bool same_name_id = false;
     bool same_classification = false;
     bool same_or_higher_priority = false;
-    double deviation_from_straight = false;
+    double deviation_from_straight = 180;
+    int index = 0;
     osrm::extractor::guidance::ConnectedRoad const *road = nullptr;
 };
 
@@ -396,10 +397,7 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
         return 1;
 
     std::size_t best = 0;
-    double best_deviation = 180;
-
     std::size_t best_continue = 0;
-    double best_continue_deviation = 180;
 
     const EdgeData &in_way = node_based_graph.GetEdgeData(via_edge);
 
@@ -408,6 +406,7 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     for (std::size_t i = 1, last = intersection.size(); i < last; ++i)
     {
         out_way out{&intersection[i]};
+        out.index = i;
         if (!intersection[i].entry_allowed)
         {
             out.entry_allowed = false;
@@ -423,6 +422,7 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
             out_node.road_classification.GetPriority() <= in_way.road_classification.GetPriority();
         out.same_classification = out_classification == in_way.road_classification;
         out.same_name_id = out_node.name_id == in_way.name_id;
+        out.road = &intersection[i];
 
         out_ways.push_back(std::move(out));
     }
@@ -446,28 +446,34 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     if (std::none_of(begin(out_ways), end(out_ways), allowed))
         return 0;
 
-    best = 1;
-    std::size_t i = 0;
-    const auto last = out_ways.size();
-    const auto notLowPriority = [](const out_way &way) {
-        return !node_based_graph.GetEdgeData(way.road->turn.eid)
-                    .road_classification.isLowPriorityRoadClass();
+    // best candidate is the first way sorted to have the smallest deviation from
+    // straight and is not low priority class
+    best = out_ways[0].index;
+    const auto notLowPriority = [&](const out_way &way) {
+        const auto way_turn = way.road->turn;
+        return !node_based_graph.GetEdgeData(way_turn.eid).road_classification.IsLowPriorityRoadClass();
     };
-    const auto best_candidate = std::find_if(begin(out_ways), end(out_ways), notLowPriority);
-    best = best_candidate != end(best_candidate) ? best_candidate : 0;
-    if (best_ == 0)
-        return 0;
-    const auto same_name = [](const out_way &lhs) { return lhs.same_name_id == true; };
-    best_continue = std::find_if(begin(out_ways), end(out_ways), same_name);
+    const auto best_candidate_it = std::find_if(begin(out_ways), end(out_ways), notLowPriority);
+    best = best_candidate_it != end(out_ways) ? best_candidate_it->index : 0;
 
-    // get a count of number of ways from that intersection that would use the
-    // continue instruction because they have the same name as the street
+    // No non-low priority roads? Declare no obvious turn
+    if (best == 0)
+        return 0;
+
+    // set best_continue as the out way that continues with the same name as the in way
+    const auto sameName = [](const out_way &lhs) { return lhs.same_name_id == true; };
+    const auto best_continue_it = std::find_if(begin(out_ways), end(out_ways), sameName);
+    best_continue = best_continue_it != end(out_ways) ? best_continue_it->index : 0;
+
+    // get a count of number of ways from that intersection that qualify to have
+    // continue instruction because they share a name with the approaching way
     const std::pair<std::int64_t, std::int64_t> num_continue_names = [&]() {
         std::int64_t count = 0, count_valid = 0;
-        std::size_t i = 0;
-        while (i < out_ways.size() && out_ways[i].same_name_id)
+        std::size_t i, last = out_ways.size();
+        for (i = 0; i < last; ++i)
         {
-            ++count;
+            if (out_ways[i].same_name_id)
+                ++count;
             if (out_ways[i].entry_allowed)
                 ++count_valid;
             ++i;
@@ -476,7 +482,6 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     }();
 
     // no out ways share the same name as the approach street
-    // out_way sorted to have the highest road class is the next best bet
     if (num_continue_names.first == 0)
         best_continue = 0;
 
@@ -492,19 +497,17 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
 
     // checks if continue candidates are sharp turns
     const bool all_continues_are_narrow = [&]() {
-        if (in_way.name_id == EMPTY_NAMEID)
+        if (in_way.name_id == EMPTY_NAMEID || best_continue == 0)
             return false;
 
-        return std::count_if(
-                   intersection.begin() + 1, intersection.end(), [&](const ConnectedRoad &road) {
-                       return (in_way.name_id ==
-                               node_based_graph.GetEdgeData(road.turn.eid).name_id) &&
-                              angularDeviation(road.turn.angle, STRAIGHT_ANGLE) < NARROW_TURN_ANGLE;
-                   }) == num_continue_names.first;
+        return std::count_if(begin(out_ways), end(out_ways), [&](const out_way &road) {
+                    return road.deviation_from_straight < NARROW_TURN_ANGLE;
+                }) == num_continue_names.first;
     }();
 
-    // has no obvious continued road
     const auto &best_data = node_based_graph.GetEdgeData(intersection[best].turn.eid);
+    const double &best_deviation = out_ways[best].deviation_from_straight;
+    const double &best_continue_deviation = out_ways[best_continue].deviation_from_straight;
 
     // return true if the best candidate is more promising than the best_continue candidate
     // otherwise return false, the best_continue candidate is more promising
@@ -663,7 +666,8 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
             return best_continue;
 
         // check if any other similar best continues exist
-        for (std::size_t i = 1; i < intersection.size(); ++i)
+        std::size_t i, last = intersection.size();
+        for (i = 1; i < last; ++i)
         {
             if (i == best_continue || !intersection[i].entry_allowed)
                 continue;
