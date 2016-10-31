@@ -927,16 +927,16 @@ EdgeID Contractor::LoadEdgeExpandedGraph(
             // TODO MKR auto turn_duration_penalty = *turn_duration_penalty_ptr;
 
             const auto turn_iter =
-                turn_penalty_lookup.find(std::make_tuple(turn_index_block_ptr->from_id,
+                find(turn_penalty_lookup, TurnPenaltySource{{turn_index_block_ptr->from_id,
                                                          turn_index_block_ptr->via_id,
-                                                         turn_index_block_ptr->to_id));
+                                                         turn_index_block_ptr->to_id}, {0,0}});
             if (turn_iter != turn_penalty_lookup.end())
             {
-                auto turn_weight_penalty_100ms = turn_iter->second.first * 10;
+                auto turn_weight_penalty_100ms = turn_iter->penalty_source.penalty * 10;
                 if (turn_weight_penalty_100ms + new_weight < compressed_edge_nodes)
                 {
                     util::SimpleLogger().Write(logWARNING)
-                        << "turn penalty " << turn_iter->second.first << " for turn "
+                        << "turn penalty " << turn_iter->penalty_source.penalty << " for turn "
                         << turn_index_block_ptr->from_id << ", " << turn_index_block_ptr->via_id
                         << ", " << turn_index_block_ptr->to_id
                         << " is too negative: clamping turn weight to "
